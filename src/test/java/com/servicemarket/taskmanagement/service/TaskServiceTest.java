@@ -76,16 +76,36 @@ class TaskServiceTest {
         Task second = task(2L, "Second");
         when(taskRepository.findAll(Sort.by("id"))).thenReturn(List.of(first, second));
 
-        List<TaskResponse> responses = taskService.findAll();
+        List<TaskResponse> responses = taskService.findAll(null);
 
         assertThat(responses).extracting(TaskResponse::id).containsExactly(1L, 2L);
+        verify(taskRepository, never()).findByStatus(any(), any());
     }
 
     @Test
     void findAllReturnsEmptyListWhenNoTasksExist() {
         when(taskRepository.findAll(Sort.by("id"))).thenReturn(List.of());
 
-        assertThat(taskService.findAll()).isEmpty();
+        assertThat(taskService.findAll(null)).isEmpty();
+    }
+
+    // DS-6623: filtering must happen in the repository query, not in memory.
+    @Test
+    void findAllWithStatusQueriesRepositoryByStatus() {
+        Task pending = task(1L, "Pending");
+        when(taskRepository.findByStatus(TaskStatus.PENDING, Sort.by("id"))).thenReturn(List.of(pending));
+
+        List<TaskResponse> responses = taskService.findAll(TaskStatus.PENDING);
+
+        assertThat(responses).extracting(TaskResponse::id).containsExactly(1L);
+        verify(taskRepository, never()).findAll(any(Sort.class));
+    }
+
+    @Test
+    void findAllWithStatusReturnsEmptyListWhenNothingMatches() {
+        when(taskRepository.findByStatus(TaskStatus.COMPLETED, Sort.by("id"))).thenReturn(List.of());
+
+        assertThat(taskService.findAll(TaskStatus.COMPLETED)).isEmpty();
     }
 
     @Test

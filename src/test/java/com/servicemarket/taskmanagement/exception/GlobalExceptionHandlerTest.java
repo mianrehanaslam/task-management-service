@@ -34,7 +34,7 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void unexpectedErrorReturns500WithoutLeakingInternalDetails() throws Exception {
-        when(taskService.findAll()).thenThrow(
+        when(taskService.findAll(null)).thenThrow(
                 new IllegalStateException("jdbc:h2:mem:secret password=hunter2"));
 
         mockMvc.perform(get("/api/tasks"))

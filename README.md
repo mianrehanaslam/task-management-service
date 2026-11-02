@@ -50,7 +50,7 @@ The database is in memory, so all tasks are lost when the application stops.
 | Method | Path | Success | Errors |
 | --- | --- | --- | --- |
 | `POST` | `/api/tasks` | `201 Created` + `Location` header + task | `400` |
-| `GET` | `/api/tasks` | `200 OK` + array (empty `[]` when none), ordered by `id` | — |
+| `GET` | `/api/tasks[?status={status}]` | `200 OK` + array (empty `[]` when none), ordered by `id`; optionally filtered by status | `400` (unsupported `status`) |
 | `GET` | `/api/tasks/{id}` | `200 OK` + task | `400` (non-numeric id), `404` |
 | `PUT` | `/api/tasks/{id}` | `200 OK` + updated task | `400`, `404`, `409` |
 | `DELETE` | `/api/tasks/{id}` | `204 No Content` | `400` (non-numeric id), `404`, `409` |
@@ -68,6 +68,55 @@ The database is in memory, so all tasks are lost when the application stops.
 
 `PUT` is a full replacement: every editable field must be sent, and an omitted `description`
 is stored as `null`.
+
+### Filtering by status
+
+`GET /api/tasks` takes an optional `status` query parameter:
+
+| Request | Result |
+| --- | --- |
+| `GET /api/tasks` | All tasks (unchanged behaviour) |
+| `GET /api/tasks?status=PENDING` | Only `PENDING` tasks |
+| `GET /api/tasks?status=IN_PROGRESS` | Only `IN_PROGRESS` tasks |
+| `GET /api/tasks?status=COMPLETED` | Only `COMPLETED` tasks |
+| `GET /api/tasks?status=COMPLETED` when none match | `200 OK` with `[]` |
+| `GET /api/tasks?status=INVALID` | `400 Bad Request` with a field error for `status` |
+
+Rules:
+
+- The value must be exactly `PENDING`, `IN_PROGRESS` or `COMPLETED`, case-sensitive, the same as
+  in request bodies.
+- These are rejected with `400`:
+  - lowercase values (`pending`);
+  - a blank value (`?status=`);
+  - padded values.
+- The rejected value is never echoed in the response.
+- Filtering is done in the database (`WHERE status = ? ORDER BY id`, backed by the
+  `idx_tasks_status_id (status, id)` index).
+- A repeated parameter (`?status=PENDING&status=COMPLETED`) is rejected with the field error
+  `"must be specified only once"`.
+- Only the parameter name `status` is recognised. Other query parameters, including `STATUS` or
+  `state`, are ignored, as for any other unknown parameter, so a misspelled name returns every task.
+
+```bash
+curl 'localhost:8080/api/tasks?status=PENDING'      # 200, only PENDING tasks (or [])
+curl -i 'localhost:8080/api/tasks?status=INVALID'   # 400, response below
+```
+
+Response to `?status=INVALID`:
+
+```json
+{
+  "timestamp": "2026-11-02T11:05:27.931242Z",
+  "status": 400,
+  "error": "Bad Request",
+  "message": "Validation failed",
+  "path": "/api/tasks",
+  "fieldErrors": [
+    {"field": "status", "message": "must be one of: PENDING, IN_PROGRESS, COMPLETED"}
+  ]
+}
+```
 
 ### Examples
 
@@ -88,6 +137,7 @@ Location: http://localhost:8080/api/tasks/1
 curl -X PUT localhost:8080/api/tasks/1 -H 'Content-Type: application/json' \
   -d '{"title":"Complete API documentation","description":"Add request and response examples","status":"IN_PROGRESS"}'
 curl localhost:8080/api/tasks
+curl 'localhost:8080/api/tasks?status=IN_PROGRESS'
 curl localhost:8080/api/tasks/1
 curl -i -X DELETE localhost:8080/api/tasks/1
 ```
@@ -123,7 +173,7 @@ invalid fields are reported together.
 
 | Status | When |
 | --- | --- |
-| `400` | Validation failure, malformed JSON (`"Malformed request body"`), wrong JSON type for a field, non-numeric id |
+| `400` | Validation failure, unsupported `status` filter, malformed JSON (`"Malformed request body"`), wrong JSON type for a field, non-numeric id |
 | `404` | Task not found, or unknown route (fixed message, request input is not echoed) |
 | `405` / `406` / `415` | Unsupported HTTP method / `Accept` type that excludes JSON / request content type. Message is fixed: `"Request could not be processed: <reason>"` |
 | `409` | The task was updated or deleted by another request at the same moment (optimistic locking); re-read and retry |
@@ -148,7 +198,7 @@ The build compiles with `-Xlint:all -Werror`.
 
 - No authentication or authorization (out of scope for DS-6622). Do not expose this service
   publicly as-is.
-- No pagination: `GET /api/tasks` returns every task.
+- No pagination: `GET /api/tasks` returns every task (or every task with the requested status).
 - Concurrent writes to the same task are protected by an internal optimistic-lock `version` column:
   the losing request gets `409` instead of silently overwriting. The version is not exposed in the
   API, so there is no `If-Match`/ETag support for edits made across separate read-then-write requests.

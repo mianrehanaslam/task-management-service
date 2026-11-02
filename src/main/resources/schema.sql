@@ -8,3 +8,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     version     BIGINT                      NOT NULL,
     CONSTRAINT chk_tasks_status CHECK (status IN ('PENDING', 'IN_PROGRESS', 'COMPLETED'))
 );
+
+-- DS-6623: serves GET /api/tasks?status=... (WHERE status = ? ORDER BY id) from the index.
+CREATE INDEX IF NOT EXISTS idx_tasks_status_id ON tasks (status, id);
