@@ -3,8 +3,9 @@
 ## Jira tickets: always run the full workflow
 
 When the user sends only a Jira ticket ID (e.g. `DS-6700`) or a ticket URL, **invoke the
-`jira-ticket-workflow` skill** (`.claude/skills/jira-ticket-workflow/SKILL.md`). Run all five steps
-in order without asking which ones to do. The user will not list the steps.
+`jira-ticket-workflow` skill** (`.claude/skills/jira-ticket-workflow/SKILL.md`). Run all six steps
+in order without asking which ones to do. The user will not list the steps. The only stop is
+step 6: ask once in chat before pushing and opening the draft PR.
 
 ## Environment
 
@@ -13,7 +14,7 @@ in order without asking which ones to do. The user will not list the steps.
 | Jira / Confluence | Atlassian MCP, site `https://servicemarket.atlassian.net`, cloudId `2dc213b3-4bf4-45b4-bac3-629147063da3`. **Read-only**: never post comments or change status. |
 | JDK | 17 (`/Library/Java/JavaVirtualMachines/microsoft-17.jdk`), the default `java` |
 | Build | `./mvnw` (Maven 3.9.9). Maven is not on PATH. |
-| Git | Branch `feature/<TICKET-ID>`. Commit when the work is done; **never push, merge or deploy** unless the user asks. |
+| Git | Branch `feature/<TICKET-ID>`. Commit automatically after the peer review; **ask the user before any push or draft PR**; never merge, force-push or deploy. |
 
 ## Commands
 

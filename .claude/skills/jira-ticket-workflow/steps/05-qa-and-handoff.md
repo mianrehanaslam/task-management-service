@@ -50,15 +50,8 @@ Write "No known residual risks identified" only after the reviews are complete a
 15. Proposed Jira update text, **not posted** (Jira access is read-only)
 16. Ending: `🤖 Generated with [Claude Code](https://claude.com/claude-code)`
 
-## Commit and PR
+## Next
 
-- Review `git status` before staging. Never commit `target/`, IDE files, logs or secrets.
-- Commit on `feature/<TICKET-ID>` with the message `<TICKET-ID>: <summary>`, a short body, and the
-  `Co-Authored-By` line.
-- **Do not push, merge or deploy** unless the user explicitly asks. Create a draft PR only if a
-  remote and `gh` access exist and the user agrees. Otherwise `PR_DESCRIPTION.md` is ready to paste.
-
-## Finish
-
-Write the completion report in the format defined in `SKILL.md`, ending with **DONE**,
-**PARTIALLY DONE** or **BLOCKED**.
+Don't commit yet. Go to [step 6](06-peer-review-commit-pr.md): the peer review, the commit, and
+the push and draft PR (after asking the user) all happen there. Write the completion report only
+after step 6.
