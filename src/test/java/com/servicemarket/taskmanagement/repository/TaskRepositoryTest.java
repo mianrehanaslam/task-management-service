@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
+import org.springframework.data.domain.Sort;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 import java.time.Instant;
@@ -63,6 +64,46 @@ class TaskRepositoryTest {
         assertThat(taskRepository.findById(saved.getId())).isEmpty();
     }
 
+    // DS-6623
+    @Test
+    void findByStatusReturnsOnlyMatchingTasksOrderedById() {
+        Task firstPending = taskRepository.save(newTask("First pending", TaskStatus.PENDING));
+        taskRepository.save(newTask("Completed", TaskStatus.COMPLETED));
+        taskRepository.save(newTask("In progress", TaskStatus.IN_PROGRESS));
+        Task secondPending = taskRepository.save(newTask("Second pending", TaskStatus.PENDING));
+        taskRepository.flush();
+        entityManager.clear();
+
+        assertThat(taskRepository.findByStatus(TaskStatus.PENDING, Sort.by("id")))
+                .extracting(Task::getId)
+                .containsExactly(firstPending.getId(), secondPending.getId());
+        assertThat(taskRepository.findByStatus(TaskStatus.COMPLETED, Sort.by("id")))
+                .extracting(Task::getTitle)
+                .containsExactly("Completed");
+        assertThat(taskRepository.findByStatus(TaskStatus.IN_PROGRESS, Sort.by("id")))
+                .extracting(Task::getTitle)
+                .containsExactly("In progress");
+    }
+
+    @Test
+    void findByStatusReturnsEmptyListWhenNothingMatches() {
+        taskRepository.saveAndFlush(newTask("Pending", TaskStatus.PENDING));
+
+        assertThat(taskRepository.findByStatus(TaskStatus.COMPLETED, Sort.by("id"))).isEmpty();
+    }
+
+    @Test
+    void statusFilterIndexExists() {
+        Object columns = entityManager.getEntityManager()
+                .createNativeQuery("""
+                        SELECT LISTAGG(COLUMN_NAME, ',') WITHIN GROUP (ORDER BY ORDINAL_POSITION)
+                        FROM INFORMATION_SCHEMA.INDEX_COLUMNS
+                        WHERE TABLE_NAME = 'TASKS' AND INDEX_NAME = 'IDX_TASKS_STATUS_ID'""")
+                .getSingleResult();
+
+        assertThat(columns).isEqualTo("STATUS,ID");
+    }
+
     @Test
     void rejectsUpdateBasedOnStaleVersion() {
         Long id = taskRepository.saveAndFlush(newTask("Original")).getId();
@@ -84,10 +125,14 @@ class TaskRepositoryTest {
     }
 
     private static Task newTask(String title) {
+        return newTask(title, TaskStatus.IN_PROGRESS);
+    }
+
+    private static Task newTask(String title, TaskStatus status) {
         Task task = new Task();
         task.setTitle(title);
         task.setDescription("Details");
-        task.setStatus(TaskStatus.IN_PROGRESS);
+        task.setStatus(status);
         task.setCreatedAt(CREATED);
         task.setUpdatedAt(CREATED);
         return task;

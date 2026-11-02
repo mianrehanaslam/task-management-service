@@ -2,9 +2,13 @@ package com.servicemarket.taskmanagement.controller;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.servicemarket.taskmanagement.entity.TaskStatus;
 import com.servicemarket.taskmanagement.repository.TaskRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -13,10 +17,14 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.everyItem;
 import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -225,6 +233,89 @@ class TaskControllerIntegrationTest {
                 .andExpect(content().json("[]"));
     }
 
+    // DS-6623 AC1-AC3
+    @ParameterizedTest
+    @EnumSource(TaskStatus.class)
+    void listFilteredByStatusReturnsOnlyMatchingTasks(TaskStatus status) throws Exception {
+        long pending1 = createTask("Pending one", "PENDING");
+        long inProgress = createTask("In progress", "IN_PROGRESS");
+        long completed = createTask("Completed", "COMPLETED");
+        long pending2 = createTask("Pending two", "PENDING");
+        List<Long> expected = switch (status) {
+            case PENDING -> List.of(pending1, pending2);
+            case IN_PROGRESS -> List.of(inProgress);
+            case COMPLETED -> List.of(completed);
+        };
+
+        JsonNode tasks = readJson(mockMvc.perform(get("/api/tasks").param("status", status.name()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(expected.size())))
+                .andExpect(jsonPath("$[*].status", everyItem(is(status.name())))));
+
+        List<Long> ids = new ArrayList<>();
+        tasks.forEach(task -> ids.add(task.get("id").asLong()));
+        assertThat(ids).containsExactlyElementsOf(expected);
+    }
+
+    // DS-6623 AC4
+    @Test
+    void listFilteredByStatusReturnsEmptyArrayWhenNothingMatches() throws Exception {
+        createTask("Pending only", "PENDING");
+
+        mockMvc.perform(get("/api/tasks").param("status", "COMPLETED"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(content().json("[]"));
+    }
+
+    // DS-6623 AC5
+    @ParameterizedTest
+    @ValueSource(strings = {"INVALID", "pending", "", " ", " PENDING", "PENDING,COMPLETED"})
+    void listWithUnsupportedStatusReturns400WithFieldError(String value) throws Exception {
+        mockMvc.perform(get("/api/tasks").param("status", value))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.timestamp").isString())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.error").value("Bad Request"))
+                .andExpect(jsonPath("$.message").value("Validation failed"))
+                .andExpect(jsonPath("$.path").value("/api/tasks"))
+                .andExpect(jsonPath("$.fieldErrors", hasSize(1)))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("status"))
+                .andExpect(jsonPath("$.fieldErrors[0].message")
+                        .value("must be one of: PENDING, IN_PROGRESS, COMPLETED"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"COMPLETED", "PENDING"})
+    void listWithRepeatedStatusParameterReturns400(String second) throws Exception {
+        mockMvc.perform(get("/api/tasks").param("status", "PENDING", second))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Validation failed"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("status"))
+                .andExpect(jsonPath("$.fieldErrors[0].message").value("must be specified only once"));
+    }
+
+    @Test
+    void invalidStatusValueIsNotEchoedInErrorResponse() throws Exception {
+        mockMvc.perform(get("/api/tasks").param("status", "<script>alert(1)</script>"))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().string(not(containsString("script"))));
+    }
+
+    // DS-6623 AC6 (regression: omitting the parameter keeps the existing behaviour)
+    @Test
+    void listWithoutStatusStillReturnsAllTasksAcrossStatuses() throws Exception {
+        long pending = createTask("Pending", "PENDING");
+        long completed = createTask("Completed", "COMPLETED");
+
+        mockMvc.perform(get("/api/tasks"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(2)))
+                .andExpect(jsonPath("$[0].id").value(pending))
+                .andExpect(jsonPath("$[1].id").value(completed));
+    }
+
     // AC5
     @Test
     void getByIdReturnsMatchingTask() throws Exception {
@@ -399,8 +490,12 @@ class TaskControllerIntegrationTest {
     }
 
     private long createTask(String title) throws Exception {
+        return createTask(title, "PENDING");
+    }
+
+    private long createTask(String title, String status) throws Exception {
         return readJson(mockMvc.perform(post("/api/tasks")
-                        .contentType(MediaType.APPLICATION_JSON).content(body(title, "Details", "PENDING")))
+                        .contentType(MediaType.APPLICATION_JSON).content(body(title, "Details", status)))
                 .andExpect(status().isCreated()))
                 .get("id").asLong();
     }

@@ -3,6 +3,7 @@ package com.servicemarket.taskmanagement.service;
 import com.servicemarket.taskmanagement.dto.TaskRequest;
 import com.servicemarket.taskmanagement.dto.TaskResponse;
 import com.servicemarket.taskmanagement.entity.Task;
+import com.servicemarket.taskmanagement.entity.TaskStatus;
 import com.servicemarket.taskmanagement.exception.TaskNotFoundException;
 import com.servicemarket.taskmanagement.repository.TaskRepository;
 import org.springframework.data.domain.Sort;
@@ -36,8 +37,16 @@ public class TaskService {
         return TaskResponse.from(taskRepository.save(task));
     }
 
-    public List<TaskResponse> findAll() {
-        return taskRepository.findAll(Sort.by("id")).stream()
+    /**
+     * Returns all tasks ordered by id, or only those with {@code status} when it is not null.
+     * Filtering is done by the database query, never in memory.
+     */
+    public List<TaskResponse> findAll(TaskStatus status) {
+        Sort byId = Sort.by("id");
+        List<Task> tasks = status == null
+                ? taskRepository.findAll(byId)
+                : taskRepository.findByStatus(status, byId);
+        return tasks.stream()
                 .map(TaskResponse::from)
                 .toList();
     }

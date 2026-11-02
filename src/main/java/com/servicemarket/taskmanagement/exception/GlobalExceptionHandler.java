@@ -48,6 +48,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return build(HttpStatus.NOT_FOUND, ex.getMessage(), request.getRequestURI(), List.of());
     }
 
+    @ExceptionHandler(InvalidTaskStatusException.class)
+    public ResponseEntity<Object> handleInvalidTaskStatus(InvalidTaskStatusException ex, HttpServletRequest request) {
+        return build(HttpStatus.BAD_REQUEST, "Validation failed", request.getRequestURI(),
+                List.of(new ApiErrorResponse.FieldError("status", ex.getMessage())));
+    }
+
     /** The task was deleted or changed by another request between our read and our write. */
     @ExceptionHandler(OptimisticLockingFailureException.class)
     public ResponseEntity<Object> handleConcurrentModification(OptimisticLockingFailureException ex,

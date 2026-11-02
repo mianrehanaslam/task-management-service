@@ -1,253 +1,222 @@
-# DS-6622: Implement Task Management CRUD APIs using H2
+# DS-6623: Add task filtering by status
 
-Jira: https://servicemarket.atlassian.net/browse/DS-6622 (Task, Major, Sprint "SM - Sprint 14", due 2026-11-03)
+Jira: https://servicemarket.atlassian.net/browse/DS-6623 (Sub-task of
+[DS-6622](https://servicemarket.atlassian.net/browse/DS-6622), Major, To Do, Sprint "SM - Sprint 14").
+No comments, links or attachments.
+
+> The DS-6622 handoff package that this file replaced is in commit `78fc9ca`.
 
 ## Problem and context
 
-DS-6622 asks for REST APIs to create, list, read, update and delete tasks. Tasks are stored in an
-H2 in-memory database and must follow layered Spring conventions: validation, a consistent error
-body, and no leaked internals. Authentication, ownership, pagination, UI and production deployment
-are out of scope.
+Users need to list only the tasks in a given state. `GET /api/tasks` gets an optional `status`
+query parameter, filtered in the database, without changing the existing list behaviour or the
+other CRUD APIs.
 
 ## Solution summary
 
-There was no existing project in the target folder (`Office Work/Java/Rehan` was empty), so this is
-a new Maven service. It follows the conventions of the sibling `communication-service` project
-(Spring Boot 3.x, Java 17, Maven, an exception-advice package).
-
-| Layer | Class |
+| Layer | Change |
 | --- | --- |
-| Controller | `TaskController`: `/api/tasks`, produces JSON, `@Valid` request bodies, `201` + `Location` on create, `204` on delete |
-| Service | `TaskService`: transactional; sets timestamps from an injected `Clock`, truncated to µs to match `TIMESTAMP(6)` |
-| Repository | `TaskRepository extends JpaRepository<Task, Long>` |
-| Entity | `Task` (`IDENTITY` id, `@Enumerated(STRING)` status, `@Version` optimistic lock), `TaskStatus` enum |
-| DTOs | `TaskRequest` (record with bean validation), `TaskResponse` (record; the entity is never exposed) |
-| Errors | `GlobalExceptionHandler extends ResponseEntityExceptionHandler`, `ApiErrorResponse`, `TaskNotFoundException` |
-| Config | `application.properties` (safe defaults), `application-local.properties` (H2 console + credentials), `schema.sql` |
+| Controller | `GET /api/tasks` reads the optional `status` from the raw query map and matches it exactly against `TaskStatus` names. Unknown, blank, padded, lowercase or repeated values throw `InvalidTaskStatusException`. |
+| Service | `findAll(TaskStatus status)`: `null` → `findAll(Sort.by("id"))`; otherwise `findByStatus(status, Sort.by("id"))`. |
+| Repository | Derived query `List<Task> findByStatus(TaskStatus, Sort)` → `select … where status=? order by id` (parameter-bound). |
+| Errors | `GlobalExceptionHandler.handleInvalidTaskStatus` → `400` in the standard format, `message: "Validation failed"`, `fieldErrors[{field:"status", message:…}]`. The rejected value is never stored or echoed. |
+| Schema | `CREATE INDEX IF NOT EXISTS idx_tasks_status_id ON tasks (status, id)`: non-destructive; serves the filter and the ordering. |
+| Docs | README "Filtering by status" section, API table, curl examples, 400 example, limitations. |
 
 ### Key decisions
 
-1. **Schema is owned by `schema.sql` (`CREATE TABLE IF NOT EXISTS`), and Hibernate uses
-   `ddl-auto=validate`.** No configuration drops or recreates tables (ticket requirement). The
-   mapping is checked at startup.
-2. **`status` is bound as a String and validated with `@Pattern`.** In the first version, an invalid
-   enum failed in Jackson before bean validation ran, so other invalid fields were never reported
-   (found in review, R1). A unit test keeps the pattern in sync with the enum.
-3. **Every error body is forced to `application/json`, and Spring's own messages are replaced with
-   fixed text.** Without this, a browser `Accept` header turned a 404 into an HTML 500, and unknown
-   routes echoed internal resource names.
-4. **`@Version` optimistic locking.** Concurrent writes produce `409` instead of a silent lost update
-   or an `updatedAt` that goes backwards. The version is internal and not exposed in the API.
-5. **No new dependencies beyond the ticket's stack** (web, data-jpa, validation, h2, test). No Lombok
-   or MapStruct; Java records cover the DTOs.
-6. **Spring Boot 3.2.12** is the last 3.2.x patch. 3.2.0 was available locally but has published
-   CVEs. Moving to a supported line (3.5.x or 4.x) is a team decision (see risk log).
+1. **Exact, case-sensitive matching, with blank values rejected.** This matches the request-body
+   rule from DS-6622. Binding the enum directly would make Spring silently treat `?status=` as "no
+   filter".
+2. **The raw `MultiValueMap` query map instead of a `String`/`List` binding.** Spring joins or
+   splits repeated values on commas, which hides `?status=A&status=B`. Repeated parameters now get a
+   precise `"must be specified only once"` error.
+3. **Filtering in the repository query, with a composite `(status, id)` index.** This satisfies the
+   ticket's "database, not in memory" requirement. The SQL is verified in the smoke-test log.
+4. **No API shape change.** No new dependencies (`pom.xml` unchanged), no migration beyond an
+   additive index.
 
-## Files changed (all new)
+## Files changed
 
 ```
-pom.xml, mvnw, mvnw.cmd, .mvn/wrapper/maven-wrapper.properties, .gitignore, README.md, PR_DESCRIPTION.md
-src/main/java/com/servicemarket/taskmanagement/
-  TaskManagementApplication.java, config/ClockConfig.java, controller/TaskController.java,
-  dto/TaskRequest.java, dto/TaskResponse.java, entity/Task.java, entity/TaskStatus.java,
-  exception/ApiErrorResponse.java, exception/GlobalExceptionHandler.java, exception/TaskNotFoundException.java,
-  repository/TaskRepository.java, service/TaskService.java
-src/main/resources/application.properties, application-local.properties, schema.sql
-src/test/java/com/servicemarket/taskmanagement/
-  TaskManagementApplicationTest.java, controller/TaskControllerIntegrationTest.java,
-  dto/TaskRequestTest.java, exception/GlobalExceptionHandlerTest.java,
-  repository/TaskRepositoryTest.java, service/TaskServiceTest.java
+README.md
+src/main/java/com/servicemarket/taskmanagement/controller/TaskController.java
+src/main/java/com/servicemarket/taskmanagement/exception/GlobalExceptionHandler.java
+src/main/java/com/servicemarket/taskmanagement/exception/InvalidTaskStatusException.java   (new)
+src/main/java/com/servicemarket/taskmanagement/repository/TaskRepository.java
+src/main/java/com/servicemarket/taskmanagement/service/TaskService.java
+src/main/resources/schema.sql
+src/test/java/.../controller/TaskControllerIntegrationTest.java
+src/test/java/.../exception/GlobalExceptionHandlerTest.java
+src/test/java/.../repository/TaskRepositoryTest.java
+src/test/java/.../service/TaskServiceTest.java
+PR_DESCRIPTION.md
 ```
 
 ## Acceptance criteria and traceability
 
-| AC | Implementation | Automated tests | Status |
+| AC / requirement | Implementation | Automated tests | Status |
 | --- | --- | --- | --- |
-| AC1 Create: saved in H2, generated id, timestamps, `201` | `TaskController.create`, `TaskService.create`, `Task` (`IDENTITY`) | `createReturns201WithGeneratedIdAndTimestampsAndPersistsInH2`, `createIgnoresClientSuppliedIdAndTimestamps`, `TaskServiceTest.createSetsTimestamps…` | ✅ |
-| AC2 Invalid (missing/blank title, invalid status, over-limit) → `400` + field errors, on create **and** update | `TaskRequest` constraints, `handleMethodArgumentNotValid`, `handleHttpMessageNotReadable` | `createWithBlankTitle…`, `…MissingTitle…`, `…MissingStatus…`, `…InvalidStatus…`, `…LowercaseStatus…`, `…OverLimitTitle…`, `…OverLimitDescription…`, `createReportsEveryInvalidField`, `createWithBlankTitleAndInvalidStatusReportsBothFields`, `createWithWrongJsonType…`, `updateWithInvalidDataReturns400AndLeavesTaskUnchanged`, boundary `createAcceptsFieldsExactlyAtMaximumLength` | ✅ |
-| AC3 List all → `200` | `findAll` (ordered by id) | `listReturnsAllStoredTasks`, `TaskServiceTest.findAllReturnsTasksOrderedById` | ✅ |
-| AC4 Empty list → `[]` + `200` | same | `listReturnsEmptyArrayWhenNoTasksExist`, `TaskServiceTest.findAllReturnsEmptyList…` | ✅ |
-| AC5 Get existing → `200` | `findById` | `getByIdReturnsMatchingTask`, `TaskServiceTest.findByIdReturnsMatchingTask` | ✅ |
-| AC6 Missing on get/update/delete → `404` + consistent body | `TaskNotFoundException` → `handleTaskNotFound` | `getByIdReturns404WithConsistentErrorResponse`, `updateReturns404…`, `deleteReturns404…`, service unit tests | ✅ |
-| AC7 Update: editable fields + `updatedAt` change; `id`, `createdAt` unchanged | `TaskService.update`; `createdAt` is `updatable=false` | `updateReplacesEditableFieldsAndPreservesIdAndCreatedAt` (integration + unit) | ✅ |
-| AC8 Delete → `204`, removed | `TaskService.delete` | `deleteRemovesTaskAndReturns204`, `TaskRepositoryTest.deletesTask` | ✅ |
-| AC9 Latest values read back from H2 in the same session | JPA + H2 | `updateReplaces…` (GET after PUT), `TaskRepositoryTest.persistsTaskInH2…` (cleared persistence context) | ✅ |
-| Error structure `{timestamp,status,error,message,path}`, no stack traces | `ApiErrorResponse`, `server.error.include-*=never` | `getByIdReturns404WithConsistentErrorResponse`, `GlobalExceptionHandlerTest.unexpectedErrorReturns500WithoutLeaking…`, `createWithMalformedJson…WithoutInternalDetails` | ✅ |
-| H2 console only for local; production config non-destructive | `application-local.properties`; base `ddl-auto=validate` | `TaskManagementApplicationTest$LocalProfile` (console 200), `$DefaultProfile` (console 404) | ✅ |
-| App starts with the documented local profile | README | `LocalProfile` test + manual `java -jar … --spring.profiles.active=local` smoke (below) | ✅ |
-| API usage and startup docs | `README.md` | n/a | ✅ |
+| AC1 `?status=PENDING` → only PENDING, 200 | controller parse → service → `findByStatus` | `listFilteredByStatusReturnsOnlyMatchingTasks[PENDING]`, `TaskServiceTest.findAllWithStatusQueriesRepositoryByStatus`, `TaskRepositoryTest.findByStatusReturnsOnlyMatchingTasksOrderedById` | ✅ |
+| AC2 `?status=IN_PROGRESS` | same | `listFilteredByStatusReturnsOnlyMatchingTasks[IN_PROGRESS]`, repository test | ✅ |
+| AC3 `?status=COMPLETED` | same | `listFilteredByStatusReturnsOnlyMatchingTasks[COMPLETED]`, repository test | ✅ |
+| AC4 No match → `[]`, 200 | same | `listFilteredByStatusReturnsEmptyArrayWhenNothingMatches`, `TaskServiceTest.findAllWithStatusReturnsEmptyList…`, `TaskRepositoryTest.findByStatusReturnsEmptyListWhenNothingMatches` | ✅ |
+| AC5 Unsupported status → 400 + clear validation error, standard format | `InvalidTaskStatusException`, `handleInvalidTaskStatus` | `listWithUnsupportedStatusReturns400WithFieldError` ×6 (`INVALID`, `pending`, blank, space, padded, comma list), `listWithRepeatedStatusParameterReturns400` ×2, `invalidStatusValueIsNotEchoedInErrorResponse` | ✅ |
+| AC6 No param → existing behaviour | `status == null` → `findAll(Sort.by("id"))` | `listWithoutStatusStillReturnsAllTasksAcrossStatuses`, existing `listReturnsAllStoredTasks`, `listReturnsEmptyArrayWhenNoTasksExist`, `TaskServiceTest.findAllReturnsTasksOrderedById` (verifies `findByStatus` is never called) | ✅ |
+| Filtering in the DB, not in memory | derived query + index | `TaskServiceTest.findAllWithStatusQueriesRepositoryByStatus` (verifies `findAll` is never called), `TaskRepositoryTest.statusFilterIndexExists`, smoke SQL log | ✅ |
+| Existing CRUD unaffected | — | all 53 pre-existing DS-6622 tests still pass (53 + 19 new = 72) | ✅ |
+| API docs updated | README | — | ✅ |
 
 ## Red–green–refactor evidence
 
 | Step | Command | Result |
 | --- | --- | --- |
-| RED 1: tests written first, no production code | `mvn -B test` | Compilation failure: `cannot find symbol: class Task / TaskRepository / TaskService / TaskRequest / TaskResponse / TaskNotFoundException` (expected) |
-| RED 2: layers implemented, no exception handler | `mvn -B test` | `Tests run: 39, Failures: 12, Errors: 4`. Service (9), repository (3) and happy-path API tests pass. Every error-contract test fails as expected: `No value at JSON path "$.timestamp"` / `"$.fieldErrors"` / `"$.status"`, and `TaskNotFoundException` escapes as a servlet error |
-| GREEN | `mvn -B test` | `Tests run: 39, Failures: 0, Errors: 0`, BUILD SUCCESS |
-| Review fixes, round 1 (R1–R3) | `mvn -B test` | `Tests run: 44, Failures: 0` |
-| Boot 3.2.12 + wrapper | `./mvnw -B clean verify` | `Tests run: 44, Failures: 0`, BUILD SUCCESS, 0 Maven warnings |
-| Review fixes, round 2 (M1, M3, L6, L7, test gaps) | `./mvnw -B clean verify` | First run: 1 failure (`htmlOnly` Accept gave 406, not 404; the test's expectation was wrong, not the behaviour). After splitting the test: **`Tests run: 53, Failures: 0, Errors: 0, Skipped: 0`, BUILD SUCCESS, 0 warnings** |
+| RED 1: tests first | `./mvnw -B test` | Compile failure: `cannot find symbol: method findByStatus(TaskStatus, Sort)` and `findAll(TaskStatus)` |
+| RED 2: repository + service done, controller ignores `status` | `./mvnw -B test` | `Tests run: 68, Failures: 11`. Service (11) and repository (5) tests pass. Every new API test fails for the expected reason: `Status expected:<400> but was:<200>`, `JSON path "$"` size mismatch, `Expected 0 values but got 1` |
+| GREEN | `./mvnw -B test` | `Tests run: 68, Failures: 0` |
+| Refactor (status index) | `./mvnw -B clean verify` | `68, 0 failures`, BUILD SUCCESS, 0 warnings |
+| Review fixes: RED | `./mvnw -B test` | `72, Failures: 3`: repeated param got `must be one of…` instead of `must be specified only once` (×2); `statusFilterIndexExists` found no `IDX_TASKS_STATUS_ID` |
+| Review fixes: GREEN | `./mvnw -B clean verify` | **`Tests run: 72, Failures: 0, Errors: 0, Skipped: 0`**, BUILD SUCCESS, 0 warnings |
 
 ## Validation results
 
 | Check | Status | Evidence |
 | --- | --- | --- |
-| Compile (main + test) with `-Xlint:all,-processing,-serial -Werror` | ✅ Passed | part of `./mvnw clean verify` |
-| Unit tests (`TaskServiceTest` 9, `TaskRequestTest` 2) | ✅ Passed | surefire |
-| Integration tests (`TaskControllerIntegrationTest` 34, `TaskRepositoryTest` 4, `GlobalExceptionHandlerTest` 2, application/profile tests 2) | ✅ Passed | surefire, 53 total |
-| Packaging (`spring-boot:repackage` jar) | ✅ Passed | `target/task-management-service-0.0.1-SNAPSHOT.jar` |
-| Manual smoke: real jar, `local` profile, curl | ✅ Passed | see API examples below |
-| Concurrency burst: 150 parallel PUT/DELETE on 30 ids | ✅ Passed | `21×200, 21×204, 25×404, 83×409`, **0×500**, 0 ERROR log lines; 9 tasks remain, consistent with 21 deletes |
-| Formatter / linter (Checkstyle, Spotless) | ⚪ Not available | no project-level config exists; not added, to avoid new tooling (see risks) |
-| Dependency CVE scan (OWASP dependency-check / Snyk) | ⚪ Not run | tooling not configured; reviewed versions manually (see security audit) |
-| E2E / UI tests | ⚪ Not applicable | API only |
+| Compile `-Xlint:all -Werror` | ✅ Passed | `./mvnw -B clean verify` |
+| Unit tests: `TaskServiceTest` 11, `TaskRequestTest` 2 | ✅ Passed | surefire |
+| Integration tests: `TaskControllerIntegrationTest` 48, `TaskRepositoryTest` 7, `GlobalExceptionHandlerTest` 2, application tests 2 | ✅ Passed | surefire, 72 total |
+| Smoke test: packaged jar, `local` profile | ✅ Passed | below |
+| SQL proof of DB filtering | ✅ Passed | `Hibernate: select … from tasks t1_0 where t1_0.status=? order by t1_0.id` |
+| Mixed parallel burst (40 POST, 80 filtered GET, 40 DELETE; 20 at a time) | ✅ Passed | `40×201, 80×200, 19×204, 21×404`, **0×500**, 0 ERROR lines |
+| Formatter / linter | ⚪ Unavailable | no project tooling (risk K8 from DS-6622) |
+| Dependency CVE scan | ⚪ Not applicable | `pom.xml` unchanged; no new dependencies |
+
+### Smoke-test output
+
+```
+GET /api/tasks                                   → 200 [ids 1 (PENDING), 2 (IN_PROGRESS), 3 (PENDING)]
+GET /api/tasks?status=PENDING                    → 200 [ids 1, 3]
+GET /api/tasks?status=IN_PROGRESS                → 200 [id 2]
+GET /api/tasks?status=COMPLETED                  → 200 []
+GET /api/tasks?status=INVALID | pending | (blank)→ 400 {"message":"Validation failed","path":"/api/tasks",
+                                                        "fieldErrors":[{"field":"status","message":"must be one of: PENDING, IN_PROGRESS, COMPLETED"}]}
+GET /api/tasks?status=PENDING&status=PENDING     → 400 {"fieldErrors":[{"field":"status","message":"must be specified only once"}]}
+```
 
 ## AI code review
 
-There were two passes: a self-review, plus an independent reviewer subagent working from a read-only
-brief. Both passes include a runtime smoke test.
+There were two passes: a self-review, plus an independent read-only reviewer subagent that ran the
+tests and curl checks. The reviewer's verdict on the code was "merge-ready".
 
 | ID | Severity | Finding | Resolution |
 | --- | --- | --- | --- |
-| R1 | Medium | An invalid `status` aborted deserialization, so other invalid fields (e.g. blank title) were not reported | Status bound as a String with `@Pattern`; all errors reported together. Regression test `createWithBlankTitleAndInvalidStatusReportsBothFields`. **Fixed** |
-| M1 | Medium | `Accept: text/html` turned a 404 into an HTML 500; `Accept: application/xml` got an empty body | Error bodies forced to JSON; controller `produces=application/json`. Tests `notFoundIsReturnedAsJsonForBrowserAcceptHeader`, `htmlOnlyAcceptReturns406AsJson`, `unsupportedAcceptTypeReturns406AsJson`. **Fixed** |
-| M3 | Medium | No optimistic locking: lost updates, and `updatedAt` could go backwards | `@Version` column. Test `rejectsUpdateBasedOnStaleVersion`; burst test confirms 409 and no 500. **Fixed** |
-| M2 | Medium | Spring Boot 3.2.0 has published CVEs (Spring 6.1.1, Tomcat 10.1.16) | Upgraded to 3.2.12 (Spring 6.1.15, Tomcat 10.1.33). Moving to a supported line is tracked as risk K1. **Mitigated** |
-| R2 | Low | `description: null` omitted from responses, so the response shape varied | Field always present. **Fixed** |
-| R3 | Low | A concurrent delete or update race surfaced as 500 | Mapped to `409`. Test `concurrentModificationReturns409`. **Fixed** |
-| L6 | Low | Unknown-route 404 echoed Spring's detail (`No static resource api/taskz.`) | Fixed message `Request could not be processed: <reason>`. Test `unknownRouteReturns404WithFixedMessage`. **Fixed** |
-| L7 | Low | Status values duplicated in the enum and the regex | Guard test `statusPatternAcceptsExactlyTheTaskStatusValues`. **Fixed (guarded)** |
-| Gap | Low | No tests for empty or `null` body | `createWithEmptyBodyReturns400`, `createWithJsonNullBodyReturns400`. **Fixed** |
-| L4 | Low | Two simultaneous DELETEs can return 204 + 409 instead of 204 + 404 | Accepted; documented (K4) |
-| L5 | Low | URLs rejected by Tomcat itself (e.g. `%00`) get Tomcat's HTML error page | Accepted; documented (K5) |
-| L8 | Low | Jackson coerces scalars (`"title":123` → `"123"`); unknown properties are ignored | Accepted by design: ignoring unknown properties prevents setting `id`/`createdAt`. Documented (K6) |
+| A1 | High | README not updated with the `status` parameter (the reviewer saw the tree before the docs commit) | README "Filtering by status" section, API table, examples, 400 body. **Fixed** |
+| A2 | Low | A repeated parameter gets a misleading `must be one of…` even when each value is valid | Raw query map, separate `"must be specified only once"` error; tests ×2. **Fixed** |
+| A3 | Low | Single-column `status` index (3 distinct values) doesn't help `ORDER BY id` | Composite `idx_tasks_status_id (status, id)`; test `statusFilterIndexExists`. **Fixed** |
+| A4 | Low | Repository test never checked a non-empty IN_PROGRESS result; no-match not covered at repository level | Test strengthened, `findByStatusReturnsEmptyListWhenNothingMatches` added. **Fixed** |
+| A5 | Low | Misspelled parameter names (`?STATUS=`, `?state=`) are silently ignored and return all tasks | Standard Spring behaviour, outside the ticket. Documented in README. **Accepted** |
+| A6 | Low | `PR_DESCRIPTION.md` still described DS-6622 | Rewritten for DS-6623. **Fixed** |
 
-No Critical or High review findings were raised. All in-scope findings are fixed and covered by
-tests.
+No Critical, High or Medium code findings remain.
+
+## Peer review (step 6, full diff before commit)
+
+A fresh read-only peer reviewer re-ran the suite (72 tests, 0 failures) and reviewed the whole
+change set. Its verdict was "OK to commit once the PR_DESCRIPTION.md counts are fixed".
+
+| ID | Severity | Finding | Resolution |
+| --- | --- | --- | --- |
+| P1 | Medium | `PR_DESCRIPTION.md` gave `TaskControllerIntegrationTest` 50 tests; surefire shows 48 | Corrected to 48. **Fixed** |
+| P2 | Medium | Said "46 pre-existing tests"; the DS-6622 baseline is 53 (53 + 19 new = 72) | Corrected in traceability and QA F-16. **Fixed** |
+| P3 | Low | README showed the 400 JSON directly under the valid `?status=PENDING` curl | Example split into a valid request and a labelled `?status=INVALID` response. **Fixed** |
+| P4 | Low | Project `CLAUDE.md` still calls `PR_DESCRIPTION.md` the DS-6622 reference, but the file now holds DS-6623 | Not changed here: `CLAUDE.md` is Claude config and needs the user's say-so. The DS-6622 package is available via `git show 78fc9ca:PR_DESCRIPTION.md`. **Tracked** |
+| P5 | Low | `@RequestParam MultiValueMap` binds all request parameters, not only the query string | Harmless on GET (no form body is parsed); the reason is documented in the Javadoc. **No change** |
+
+Other checks found nothing:
+- security: fixed messages, no echo, no string-built SQL;
+- config: additive index only;
+- debug code and TODOs: none;
+- files: `target/` and `.idea/` are ignored; no secrets.
 
 ## Security audit
 
 | Area | Result |
 | --- | --- |
-| AuthN/AuthZ | **None by ticket scope** (explicitly out of scope). Tracked as K2. Do not expose publicly. |
-| Input validation | All fields validated (presence, blank, length, enum allow-list). DB `CHECK` constraint and column lengths as a second layer. Ids are typed `Long`, so non-numeric ids return 400. |
-| Injection | Spring Data JPA uses parameterized queries only; no string-built SQL or JPQL. No command execution. |
-| Output encoding / XSS | JSON-only responses (`produces` + forced content type for errors). User text is never rendered as HTML. Consumers must encode it on display. |
-| Mass assignment | DTO has no `id`/`createdAt`/`updatedAt`/`version`. Client-supplied values are ignored (tested). |
-| Sensitive data / logging | No PII. Error bodies use fixed messages; stack traces and exception names are suppressed (tested with a secret-bearing exception message). Logs record method + URI only, never bodies. |
-| Secrets/config | Production-safe base config has no credentials. Throwaway `sa`/empty credentials exist only in `application-local.properties` for a private in-memory DB. |
-| H2 console | Off by default (tested 404). Local profile only, `web-allow-others=false` (localhost only). The console can execute arbitrary SQL/Java, so it must never be enabled on shared hosts (README warns). Medium, accepted for local dev (K3). |
-| CSRF | Not applicable: no cookies or session auth. Revisit when auth is added. |
-| SSRF / path traversal / deserialization | No outbound calls, no file I/O. Jackson is used without default typing (no polymorphic deserialization). |
-| DoS | No pagination (out of scope) and an unbounded in-memory store. Jackson 2.15 stream constraints cap string sizes. Tracked as K7. |
-| Dependencies | Boot 3.2.12 → Spring 6.1.15, Tomcat 10.1.33, Hibernate 6.4.10, H2 2.2.224, Jackson 2.15.4. The 3.2.x line is out of OSS support, so later CVEs will not be patched (K1). No automated CVE scan was run. |
+| Injection | Derived JPA query with a bound parameter (`status=?`). The value only reaches the DB after it is matched against enum names. **None** |
+| Output encoding / XSS / leakage | The rejected value is never stored in the exception or the response (test with `<script>`). Fixed messages only. **None** |
+| Input validation | Allow-list of enum names; case-sensitive; blank, padded and repeated values rejected. **OK** |
+| AuthN/AuthZ | Unchanged: no auth, out of scope (DS-6622 risk K2). Filtering exposes nothing the unfiltered list didn't. |
+| DoS | Filtering reduces the result size; indexed. No pagination (out of scope, DS-6622 K7). |
+| Dependencies / secrets / config | No dependency or config change; the schema change is additive and non-destructive. |
+| CSRF / SSRF / deserialization / files | Not applicable (GET, no outbound calls, no body). |
 
-**No unresolved Critical or High security findings within the ticket's scope.**
+**No Critical or High security findings.**
 
 ## QA test-case matrix
 
-All "Auto" cases ran in `./mvnw clean verify` on 2026-11-02 and passed. Test class prefixes:
-`IT` = `TaskControllerIntegrationTest`, `UT` = `TaskServiceTest`, `RT` = `TaskRepositoryTest`,
-`EH` = `GlobalExceptionHandlerTest`, `AT` = `TaskManagementApplicationTest`, `RQ` = `TaskRequestTest`.
+All "Auto" cases ran in `./mvnw -B clean verify` on 2026-11-02 and passed. `IT` =
+`TaskControllerIntegrationTest`, `UT` = `TaskServiceTest`, `RT` = `TaskRepositoryTest`.
 
 | ID | Category | Requirement | Preconditions | Steps | Expected | Type | Status | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| QA-01 | Happy | AC1 | Empty DB | POST valid body | 201, id, equal createdAt/updatedAt, `Location`, stored in DB | Auto | Pass | IT.createReturns201… |
-| QA-02 | Happy | AC1 | — | POST without description | 201, `description:null` | Auto | Pass | IT.createWithoutDescription… |
-| QA-03 | Boundary | Validation | — | POST title=150, description=1000 chars | 201 | Auto | Pass | IT.createAcceptsFieldsExactlyAtMaximumLength |
-| QA-04 | Negative | AC2 | — | POST title `"   "` | 400, fieldErrors[title] | Auto | Pass | IT.createWithBlankTitle… |
-| QA-05 | Negative | AC2 | — | POST without title | 400, fieldErrors[title] | Auto | Pass | IT.createWithMissingTitle… |
-| QA-06 | Negative | AC2 | — | POST status `DONE` / `pending` | 400, fieldErrors[status] lists allowed values | Auto | Pass | IT.createWithInvalidStatus…, …LowercaseStatus… |
-| QA-07 | Negative | AC2 | — | POST without status | 400, fieldErrors[status] | Auto | Pass | IT.createWithMissingStatus… |
-| QA-08 | Boundary | AC2 | — | POST title=151 / description=1001 | 400, field error | Auto | Pass | IT.createWithOverLimit… |
-| QA-09 | Negative | AC2 | — | POST several invalid fields | 400, every field reported, nothing saved | Auto | Pass | IT.createReportsEveryInvalidField, …BlankTitleAndInvalidStatus… |
-| QA-10 | Negative | Errors | — | POST malformed / empty / `null` / wrong-type JSON | 400, no internal details | Auto | Pass | IT.createWithMalformedJson…, …EmptyBody…, …JsonNullBody…, …WrongJsonType… |
-| QA-11 | Negative | Errors | — | POST `text/plain` | 415 JSON | Auto | Pass | IT.createWithUnsupportedMediaType… |
-| QA-12 | Security | Mass assignment | — | POST with `id`, `createdAt` | Ignored | Auto | Pass | IT.createIgnoresClientSupplied… |
-| QA-13 | Happy | AC3 | 2 tasks | GET /api/tasks | 200, both, ordered by id | Auto | Pass | IT.listReturnsAllStoredTasks |
-| QA-14 | Edge | AC4 | Empty DB | GET /api/tasks | 200 `[]` | Auto | Pass | IT.listReturnsEmptyArray… |
-| QA-15 | Happy | AC5 | Task exists | GET /{id} | 200 task | Auto | Pass | IT.getByIdReturnsMatchingTask |
-| QA-16 | Negative | AC6 | — | GET /25 | 404 consistent body | Auto | Pass | IT.getByIdReturns404… |
-| QA-17 | Negative | Errors | — | GET /abc | 400 consistent body | Auto | Pass | IT.nonNumericId… |
-| QA-18 | Happy | AC7, AC9 | Task exists | PUT valid; then GET | 200; id/createdAt same; updatedAt later; GET shows new values | Auto | Pass | IT.updateReplacesEditableFields…, UT.update… |
-| QA-19 | Edge | AC7 | Task with description | PUT without description | description cleared (full replace) | Auto | Pass | IT.updateWithoutDescriptionClearsIt |
-| QA-20 | Negative | AC6 | — | PUT /25 | 404 | Auto | Pass | IT.updateReturns404… |
-| QA-21 | Negative | AC2 | Task exists | PUT blank title / bad status | 400; task unchanged | Auto | Pass | IT.updateWithInvalidData… |
-| QA-22 | Happy | AC8 | Task exists | DELETE /{id}; GET | 204 empty body; then 404 | Auto | Pass | IT.deleteRemovesTask… |
-| QA-23 | Negative | AC6 | — | DELETE /25 | 404 | Auto | Pass | IT.deleteReturns404… |
-| QA-24 | Negative | Errors | — | DELETE /api/tasks | 405 JSON | Auto | Pass | IT.unsupportedMethod… |
-| QA-25 | Regression | Errors | — | GET /25 with browser Accept; GET with `text/html` or XML only | 404 JSON; 406 JSON | Auto | Pass | IT.notFoundIsReturnedAsJson…, …406… |
-| QA-26 | Security | No leakage | — | GET /api/taskz | 404, fixed message, no echoed input | Auto | Pass | IT.unknownRoute… |
-| QA-27 | Security | No leakage | Service throws with secret in message | GET /api/tasks | 500 generic message, no secret or stack | Auto | Pass | EH.unexpectedError… |
-| QA-28 | Recovery | Concurrency | — | Delete/update race | 409 consistent body | Auto | Pass | EH.concurrentModification…, RT.rejectsUpdateBasedOnStaleVersion |
-| QA-29 | Persistence | AC9 | — | Save, clear context, reload | Values and µs timestamps identical; generated ids increase; status stored as name | Auto | Pass | RT.* |
-| QA-30 | Config | H2 console | — | Start default / local profile; GET /h2-console/ | 404 / 200 | Auto | Pass | AT.* |
-| QA-31 | Regression | Status sync | — | Compare regex to enum | Identical | Auto | Pass | RQ.* |
-| QA-32 | Manual | Local startup | JDK 17 | `./mvnw spring-boot:run -Dspring-boot.run.profiles=local`; run the README curl examples | Same responses as documented | Manual | Pass (run by Claude via jar) | smoke log below |
-| QA-33 | Manual | H2 console | Local profile running | Open `http://localhost:8080/h2-console`, JDBC `jdbc:h2:mem:tasksdb`, user `sa`; `SELECT * FROM tasks` | Rows match API data | Manual | **Pending (human)** | — |
-| QA-34 | Manual | Concurrency | Local profile running | Fire parallel PUT/DELETE at the same ids (e.g. `xargs -P 20 curl …`) | Only 200/204/404/409, never 500 | Manual | Pass (run by Claude) | 150 requests: 21×200, 21×204, 25×404, 83×409 |
+| F-01 | Happy | AC1 | 2 PENDING, 1 IN_PROGRESS, 1 COMPLETED | `GET ?status=PENDING` | 200, the 2 PENDING ids in id order | Auto | Pass | IT.listFiltered…[PENDING] |
+| F-02 | Happy | AC2 | same | `GET ?status=IN_PROGRESS` | 200, 1 task | Auto | Pass | IT.listFiltered…[IN_PROGRESS] |
+| F-03 | Happy | AC3 | same | `GET ?status=COMPLETED` | 200, 1 task | Auto | Pass | IT.listFiltered…[COMPLETED] |
+| F-04 | Edge | AC4 | Only PENDING tasks | `GET ?status=COMPLETED` | 200 `[]` | Auto | Pass | IT.…EmptyArrayWhenNothingMatches |
+| F-05 | Negative | AC5 | — | `GET ?status=INVALID` | 400, `fieldErrors[status]` lists the allowed values | Auto | Pass | IT.listWithUnsupportedStatus…[INVALID] |
+| F-06 | Negative | AC5 | — | `?status=pending` | 400 (case-sensitive) | Auto | Pass | IT …[pending] |
+| F-07 | Boundary | AC5 | — | `?status=`, `?status=%20`, `?status=%20PENDING` | 400 | Auto | Pass | IT …["", " ", " PENDING"] |
+| F-08 | Negative | AC5 | — | `?status=PENDING,COMPLETED` | 400 `must be one of…` | Auto | Pass | IT …[PENDING,COMPLETED] |
+| F-09 | Negative | AC5 | — | `?status=PENDING&status=COMPLETED` / `…&status=PENDING` | 400 `must be specified only once` | Auto | Pass | IT.listWithRepeatedStatusParameter… |
+| F-10 | Security | No echo | — | `?status=<script>alert(1)</script>` | 400; body contains no `script` | Auto | Pass | IT.invalidStatusValueIsNotEchoed… |
+| F-11 | Regression | AC6 | Mixed statuses | `GET /api/tasks` | 200, all tasks, id order | Auto | Pass | IT.listWithoutStatusStillReturnsAll…, IT.listReturnsAllStoredTasks |
+| F-12 | Regression | AC6 | Empty DB | `GET /api/tasks` | 200 `[]` | Auto | Pass | IT.listReturnsEmptyArray… |
+| F-13 | Persistence | DB filtering | H2 | `findByStatus` per status, no-match | Correct rows in id order; empty list | Auto | Pass | RT.findByStatus… |
+| F-14 | Performance | DB filtering | — | Service with status | `findByStatus` called; `findAll` never called | Auto | Pass | UT.findAllWithStatusQueriesRepositoryByStatus |
+| F-15 | Performance | Index | H2 schema | Inspect `INFORMATION_SCHEMA` | `IDX_TASKS_STATUS_ID` on `(STATUS, ID)` | Auto | Pass | RT.statusFilterIndexExists |
+| F-16 | Regression | CRUD | — | Full DS-6622 suite | All pass | Auto | Pass | 53 pre-existing tests |
+| F-17 | Recovery | Concurrency | Running jar | Parallel POST, filtered GET, DELETE | No 500s | Manual (run by Claude) | Pass | burst counts above |
+| F-18 | Manual | Docs | Local profile running | Run the README "Filtering by status" curl examples | Responses match the README | Manual | **Pending (human)** | — |
 
-### Smoke-test output (real jar, `local` profile)
+## Deployment, migration, monitoring and rollback
 
-```
-POST   /api/tasks     → 201  Location: http://localhost:18080/api/tasks/1
-GET    /api/tasks     → 200  [{"id":1,…,"status":"PENDING",…}]
-PUT    /api/tasks/1   → 200  createdAt unchanged, updatedAt advanced
-GET    /api/tasks/1   → 200  latest values
-DELETE /api/tasks/1   → 204
-GET    /api/tasks/25  → 404  {"timestamp":…,"status":404,"error":"Not Found","message":"Task with ID 25 was not found","path":"/api/tasks/25"}
-GET    /h2-console/   → 200 (local profile)
-```
-
-## Deployment, monitoring and rollback
-
-- **Deploy:** none requested (production deployment is out of scope). Run with `java -jar` (default
-  profile) or `--spring.profiles.active=local` for development.
-- **Migration:** none. A fresh in-memory schema is created by `schema.sql` on each start. A
-  non-embedded database would need a migration tool such as Flyway; startup then fails fast on
-  `validate`.
-- **Monitoring:** 500s are logged at ERROR with method and URI; concurrency conflicts at WARN. No
-  Actuator was added (not requested).
-- **Rollback:** the service is new and standalone with no shared state, so rollback is removing or
-  not deploying it. Data is in memory only.
+- **Deploy:** none requested. Same jar and profiles as DS-6622.
+- **Migration:** additive `CREATE INDEX IF NOT EXISTS` in `schema.sql`, run on startup. No data
+  change.
+- **Monitoring:** unchanged. 400s are client errors and are not logged at ERROR.
+- **Rollback:** revert this branch's commit. The index is harmless if left in place.
+- **Compatibility:** `GET /api/tasks` without `status` behaves exactly as before. Clients that were
+  already sending an unrelated `status` parameter (previously ignored) would now get filtered
+  results or a 400. No such clients are known; the service has not been released.
 
 ## Known-risk log
 
 | ID | Risk | Severity | Likelihood | Impact | Mitigation | Owner / follow-up | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| K1 | Spring Boot 3.2.x is out of OSS support; future CVEs unpatched | Medium | Medium | Exposure to unpatched framework/Tomcat CVEs | Pinned to the last patch 3.2.12; upgrade to 3.5.x or 4.x and add OWASP dependency-check to CI | Team / tech lead | Open |
-| K2 | No authentication or authorization | High if exposed; N/A for scope | Low (local/internal) | Anyone who can reach the port can read and modify all tasks | Out of scope per ticket; README warns not to expose it | Product, future ticket | Accepted |
-| K3 | H2 console can run arbitrary SQL/Java | Medium | Low | Code execution on the dev machine if the local profile runs on a shared host | Off by default; localhost-only; README warning | Developers | Accepted |
-| K4 | Simultaneous DELETEs may return 409 instead of 404 | Low | Low | Minor client confusion | Documented; client retries a GET | — | Accepted |
-| K5 | Tomcat-rejected URLs return Tomcat's HTML error page | Low | Low | Inconsistent error format for malformed URLs only | Add a custom `ErrorController` if needed | Backlog | Accepted |
-| K6 | Lenient JSON binding (scalar coercion, unknown fields ignored) | Low | Medium | A misspelled `descripton` is silently dropped | Documented; tighten Jackson settings if desired | Backlog | Accepted |
-| K7 | No pagination; unbounded in-memory data | Low | Low | Memory growth or large responses under heavy use | Out of scope; add pagination before real use | Backlog | Accepted |
-| K8 | No formatter, linter or CVE-scan tooling in the build | Low | — | Style drift; unscanned dependencies | Compiler `-Xlint -Werror` only; adopt team Checkstyle/Spotless config | Team | Open |
-| K9 | Not in version control (target folder is not a git repo) | Medium (process) | — | Cannot open a PR as-is | Push the project into the intended repository, then open the PR using this description | Rehan | Open |
+| D1 | Misspelled parameter names are ignored and return all tasks | Low | Low | Client may assume the filter applied | Documented in README | — | Accepted |
+| D2 | Case-sensitive values (`pending` → 400) may surprise clients | Low | Medium | Client sees 400 | Consistent with the request-body rule; clear field error lists the allowed values | Product, if case-insensitive is wanted | Accepted |
+| D3 | `feature/DS-6623` is branched from unmerged `feature/DS-6622` | Low (process) | — | PR diff includes DS-6622 if opened against a base without it | Merge DS-6622 first, or open this PR against `feature/DS-6622` | Rehan | Open |
+| D4 | No git remote, so a PR can't be opened yet | Medium (process) | — | Handoff only via this file | Add the team remote, then open a draft PR | Rehan | Open |
+| — | DS-6622 risks K1 (Boot 3.2 EOL line), K2 (no auth), K7 (no pagination), K8 (no linter) | — | — | — | Unchanged | see DS-6622 | Open |
 
 ## Reviewer focus areas
 
-1. `GlobalExceptionHandler`: completeness of exception mapping and fixed messages.
-2. `TaskRequest.status` as a String with `@Pattern`, versus a custom enum constraint.
-3. `@Version` semantics, and whether `PUT` should also support `If-Match`/ETag.
-4. Profile split and `schema.sql` + `ddl-auto=validate` approach.
-5. Spring Boot line choice (K1).
+1. `TaskController.findAll`: raw `MultiValueMap` versus a bound `@RequestParam`, and strict
+   matching rules.
+2. Whether case-sensitive `status` matching is the desired product behaviour (D2).
+3. Index choice `(status, id)`.
 
 ## Proposed Jira update (not posted: the Jira connection is read-only)
 
-> DS-6622 implemented in `task-management-service` (Spring Boot 3.2.12, Java 17, H2).
+> DS-6623 implemented on `feature/DS-6623`.
 >
-> - The five CRUD endpoints under `/api/tasks` are done, with validation, a consistent JSON error
->   body, the H2 console in the local profile only, and non-destructive schema handling.
-> - 53 automated tests (unit + integration) pass via `./mvnw clean verify`, and a manual smoke and
->   concurrency test was run on the packaged jar. AC1–AC9 are covered.
-> - AI review findings were fixed: all-field validation reporting, JSON-only error bodies,
->   optimistic locking, and no echoing of internal details.
-> - Open items:
->   - the Boot version line decision (3.2.x is out of OSS support),
->   - adding the project to git and opening the PR,
->   - manual check of QA-33 (H2 console).
-> - The automation comment asks for estimates; the due date (2026-11-03) is already set. Original
->   estimate still needs to be filled in by the assignee.
+> - `GET /api/tasks?status={PENDING|IN_PROGRESS|COMPLETED}` filters in the database (derived JPA
+>   query plus an index). Omitting `status` keeps the existing behaviour.
+> - An unsupported, blank, lowercase or repeated value returns 400 in the standard error format with
+>   a `status` field error.
+> - 72 automated tests pass (`./mvnw clean verify`), including all existing CRUD tests. AC1–AC6 are
+>   covered, and the README is updated.
+> - Open items: add the git remote and open the PR (branched from DS-6622), and the manual docs
+>   check F-18.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
